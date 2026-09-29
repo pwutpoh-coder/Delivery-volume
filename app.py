@@ -5,134 +5,268 @@ import streamlit as st
 
 # ตั้งค่าหน้าเว็บแดชบอร์ด
 st.set_page_config(
-    page_title="Dashboard ยอดส่งระหว่างเดือน", page_icon="📊", layout="wide"
+    page_title="Dashboard ยอดส่งระหว่างเดือน (Cross-Filter)",
+    page_icon="📊",
+    layout="wide",
 )
 
-st.title("📊 แดชบอร์ดวิเคราะห์ยอดส่งระหว่างเดือน")
+# Custom CSS เพื่อตกแต่งโทนสีพาสเทล ฟ้า น้ำเงิน ขาว ให้ดูสบายตาและพรีเมียม
 st.markdown(
-    "ระบบกรองข้อมูลแบบ Multi-dimensional Cross-filtering เชื่อมต่อข้อมูลจาก Google Sheets แบบเรียลไทม์"
+    """
+    <style>
+    .main {
+        background-color: #F4F7FC;
+    }
+    .stButton>button {
+        background-color: #3B82F6;
+        color: white;
+        border-radius: 8px;
+        border: none;
+        padding: 0.5rem 1rem;
+        font-weight: 600;
+    }
+    .stButton>button:hover {
+        background-color: #2563EB;
+        color: white;
+    }
+    div.stMetric {
+        background-color: #FFFFFF;
+        padding: 15px;
+        border-radius: 10px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        border-left: 5px solid #3B82F6;
+    }
+    </style>
+""",
+    unsafe_allow_html=True,
 )
 
-# ฟังก์ชันโหลดข้อมูลจาก Google Sheets โดยดึงเฉพาะชีท "ยอดส่งระหว่างเดือน"
+st.title("📊 แดชบอร์ดวิเคราะห์ยอดส่งระหว่างเดือน (Multi-Dimensional Cross-Filter)")
+st.markdown(
+    "ระบบวิเคราะห์ข้อมูลเชื่อมต่อ Google Sheets แบบเรียลไทม์ ครอบคลุมทุกมิติ"
+    " พร้อมระบบกรองข้อมูลข้ามกลุ่ม (Cross-Filtering)"
+)
 
-
-@st.cache_data(ttl=300)
+# 1. ฟังก์ชันโหลดข้อมูลแบบไม่จำกัดและรองรับอักขระพิเศษ
+@st.cache_data(ttl=60)
 def load_data():
   sheet_id = "1XRkHwEJoEPiVVortmkN60mN39TSsHN2JVo733US3fQs"
   sheet_name_encoded = urllib.parse.quote("ยอดส่งระหว่างเดือน")
+  # ใช้ gviz แบบดึงข้อมูลดิบทั้งหมด เพื่อให้ครอบคลุมทุกแถวที่ซ่อนหรืออักขระพิเศษ
   url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={sheet_name_encoded}"
-  df = pd.read_csv(url)
-  return df
+  try:
+    df = pd.read_csv(url)
+    return df
+  except Exception as e:
+    # Fallback กรณีดึงแบบระบุชื่อชีทไม่ผ่าน ให้ดึงชีทแรกสุดแทน
+    url_fallback = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+    df = pd.read_csv(url_fallback)
+    return df
 
 
 # โหลดข้อมูล
-try:
-  df = load_data()
-except Exception as e:
+df_raw = load_data()
+
+if df_raw.empty:
   st.error(
-      f"ไม่สามารถดึงข้อมูลจาก Google Sheets ได้ กรุณาตรวจสอบชื่อชีท 'ยอดส่งระหว่างเดือน' และสิทธิ์การแชร์ลิงก์: {e}"
-  )
-  df = pd.DataFrame()
-
-if not df.empty:
-  # ทำความสะอาดชื่อคอลัมน์ (ตัดช่องว่างถ้ามี)
-  df.columns = df.columns.str.strip()
-
-  # Sidebar: ตัวกรองข้อมูลทุกมิติ (Global Cross-Filters)
-  st.sidebar.header("🔍 ตัวกรองข้อมูล (Filters)")
-
-  filtered_df = df.copy()
-
-  # ค้นหาคอลัมน์ที่เกี่ยวกับสถานะหรือดราฟอัตโนมัติ
-  draft_cols = [
-      c for c in df.columns if "ดราฟ" in c or "Status" in c or "สถานะ" in c
-  ]
-  if draft_cols:
-    selected_draft = st.sidebar.multiselect(
-        "📌 กองสถานะ / ดราฟ", options=df[draft_cols[0]].dropna().unique()
-    )
-    if selected_draft:
-      filtered_df = filtered_df[filtered_df[draft_cols[0]].isin(selected_draft)]
-
-  # ค้นหาคอลัมน์ประเภทข้อความ/หมวดหมู่สำหรับทำฟิลเตอร์ข้ามกลุ่ม
-  cat_cols = [
-      c
-      for c in df.columns
-      if df[c].dtype == "object"
-      and c not in draft_cols
-      and len(df[c].unique()) < 100
-  ]
-
-  selected_filters = {}
-  for col in cat_cols[:5]:  # เลือกมา 5 มิติหลักแรก
-    options = df[col].dropna().unique().tolist()
-    selected = st.sidebar.multiselect(f"📂 เลือก {col}", options=options)
-    if selected:
-      filtered_df = filtered_df[filtered_df[col].isin(selected)]
-
-  # ส่วนแสดงผล Metric Summary ด้านบน
-  st.markdown("---")
-  m1, m2, m3, m4 = st.columns(4)
-  with m1:
-    st.metric("จำนวนรายการทั้งหมด", f"{len(filtered_df):,}")
-  with m2:
-    # หาคอลัมน์ที่เป็นตัวเลข (เช่น จำนวนเงิน, น้ำหนัก, จำนวนชิ้น)
-    num_cols = df.select_dtypes(include=["float64", "int64"]).columns.tolist()
-    if num_cols:
-      total_val = filtered_df[num_cols[0]].sum()
-      st.metric(f"รวม {num_cols[0]}", f"{total_val:,.2f}")
-    else:
-      st.metric("ยอดรวม", "-")
-  with m3:
-    pct = (
-        (len(filtered_df) / len(df) * 100)
-        if len(df) > 0
-        else 0
-    )
-    st.metric("สัดส่วนจากข้อมูลทั้งหมด", f"{pct:.1f}%")
-  with m4:
-    st.metric("จำนวนเงื่อนไขที่กรอง", f"{len(selected_filters)} ตัวกรอง")
-
-  # ส่วนกราฟวิเคราะห์ข้อมูลข้ามมิติ
-  st.markdown("### 📈 กราฟสรุปผลตามมิติข้อมูล")
-  g1, g2 = st.columns(2)
-
-  if len(cat_cols) >= 1 and not filtered_df.empty:
-    with g1:
-      fig_pie = px.pie(
-          filtered_df,
-          names=cat_cols[0],
-          title=f"สัดส่วนแยกตาม {cat_cols[0]}",
-          hole=0.4,
-      )
-      st.plotly_chart(fig_pie, use_container_width=True)
-
-  if len(cat_cols) >= 2 and not filtered_df.empty:
-    with g2:
-      val_counts = (
-          filtered_df[cat_cols[1]].value_counts().reset_index().head(10)
-      )
-      val_counts.columns = [cat_cols[1], "count"]
-      fig_bar = px.bar(
-          val_counts,
-          x=cat_cols[1],
-          y="count",
-          title=f"10 อันดับสูงสุดตาม {cat_cols[1]}",
-          text="count",
-      )
-      st.plotly_chart(fig_bar, use_container_width=True)
-
-  # ส่วนตารางแสดงข้อมูลรายละเอียด
-  st.markdown("### 📋 ตารางข้อมูลรายละเอียด (Filtered Data Table)")
-  st.dataframe(filtered_df, use_container_width=True)
-
-  # ปุ่มดาวน์โหลดข้อมูลที่ผ่านการกรองแล้ว
-  csv_data = filtered_df.to_csv(index=False).encode("utf-8-sig")
-  st.download_button(
-      label="📥 ดาวน์โหลดข้อมูลที่กรองแล้ว (.csv)",
-      data=csv_data,
-      file_name="filtered_delivery_report.csv",
-      mime="text/csv",
+      "ไม่พบข้อมูลใน Google Sheets กรุณาตรวจสอบลิงก์หรือสิทธิ์การเข้าถึงอีกครั้ง"
   )
 else:
-  st.info("ไม่พบข้อมูลในชีท กรุณาตรวจสอบรูปแบบไฟล์ Google Sheets อีกครั้ง")
+  # ทำความสะอาดชื่อคอลัมน์
+  df_raw.columns = df_raw.columns.str.strip()
+
+  # จัดการ Session State สำหรับเก็บบันทึกการกรองข้ามกลุ่ม (Cross-Filter State)
+  if "selected_filters" not in st.session_state:
+    st.session_state.selected_filters = {}
+
+  # Sidebar สำหรับควบคุมและรีเซ็ต
+  st.sidebar.header("🎛️ ควบคุมแดชบอร์ด")
+  if st.sidebar.button("🔄 รีเซ็ตตัวกรองทั้งหมด (Reset Filters)"):
+    st.session_state.selected_filters = {}
+    st.rerun()
+
+  # คัดแยกประเภทคอลัมน์อัตโนมัติเพื่อใช้ทำมุมมองกราฟ
+  cat_columns = [
+      c
+      for c in df_raw.columns
+      if df_raw[c].dtype == "object" and len(df_raw[c].unique()) < 200
+  ]
+  num_columns = df_raw.select_dtypes(
+      include=["float64", "int64"]
+  ).columns.tolist()
+
+  # กรองข้อมูลตามที่ผู้ใช้เลือกผ่าน Session State ข้ามกลุ่ม
+  filtered_df = df_raw.copy()
+  for col, val_list in st.session_state.selected_filters.items():
+    if val_list and col in filtered_df.columns:
+      filtered_df = filtered_df[filtered_df[col].isin(val_list)]
+
+  # แสดงผล Metric ภาพรวม
+  col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+  with col_m1:
+    st.metric("📦 จำนวนรายการทั้งหมด", f"{len(filtered_df):,}")
+  with col_m2:
+    if num_columns:
+      total_sum = filtered_df[num_columns[0]].sum()
+      st.metric(f"💰 รวม {num_columns[0]}", f"{total_sum:,.2f}")
+    else:
+      st.metric("💰 ยอดรวม", "-")
+  with col_m3:
+    ratio_pct = (
+        (len(filtered_df) / len(df_raw) * 100) if len(df_raw) > 0 else 0
+    )
+    st.metric("📈 สัดส่วนข้อมูลที่แสดง", f"{ratio_pct:.1f}%")
+  with col_m4:
+    st.metric(
+        "🔗 เงื่อนไข Cross-Filter Active",
+        f"{len(st.session_state.selected_filters)} มิติ",
+    )
+
+  st.markdown("---")
+
+  # ตรวจสอบว่ามีคอลัมน์เพียงพอสำหรับสร้างกราฟ 3 มุมมองหรือไม่
+  if len(cat_columns) >= 3:
+    c1, c2, c3 = st.columns(3)
+
+    pastel_colors = px.colors.qualitative.Pastel1
+
+    # --- มุมมองที่ 1: กราฟวงกลม (Pie Chart) แสดงสัดส่วนเรื่องที่ 1 ---
+    with c1:
+      st.subheader(f"🌐 สัดส่วนตาม: {cat_columns[0]}")
+      pie_data = (
+          filtered_df[cat_columns[0]].value_counts().reset_index().head(8)
+      )
+      pie_data.columns = [cat_columns[0], "count"]
+
+      fig_pie = px.pie(
+          pie_data,
+          names=cat_columns[0],
+          values="count",
+          hole=0.4,
+          color_discrete_sequence=px.colors.sequential.Blues_r,
+      )
+      fig_pie.update_layout(
+          margin=dict(t=20, b=20, l=20, r=20),
+          paper_bgcolor="rgba(0,0,0,0)",
+          plot_bgcolor="rgba(0,0,0,0)",
+      )
+
+      # ใช้ st.plotly_chart พร้อมเปิด selection เพื่อให้คลิกกรองข้ามกลุ่มได้
+      selected_pie = st.plotly_chart(
+          fig_pie,
+          use_container_width=True,
+          key="pie_plot",
+          on_select="rerun",
+      )
+
+      # จัดการ Event การคลิกที่กราฟวงกลม
+      if (
+          selected_pie
+          and "selection" in selected_pie
+          and selected_pie["selection"]["points"]
+      ):
+        selected_points = [
+            p["label"] for p in selected_pie["selection"]["points"]
+        ]
+        st.session_state.selected_filters[cat_columns[0]] = selected_points
+        st.rerun()
+
+    # --- มุมมองที่ 2: กราฟแท่ง (Bar Chart) แสดงเปรียบเทียบเรื่องที่ 2 ---
+    with c2:
+      st.subheader(f"📊 เปรียบเทียบตาม: {cat_columns[1]}")
+      bar_data = (
+          filtered_df[cat_columns[1]].value_counts().reset_index().head(10)
+      )
+      bar_data.columns = [cat_columns[1], "count"]
+
+      fig_bar = px.bar(
+          bar_data,
+          x=cat_columns[1],
+          y="count",
+          text="count",
+          color="count",
+          color_continuous_scale="Blues",
+      )
+      fig_bar.update_layout(
+          margin=dict(t=20, b=20, l=20, r=20),
+          paper_bgcolor="rgba(0,0,0,0)",
+          plot_bgcolor="rgba(0,0,0,0)",
+          coloraxis_showscale=False,
+      )
+
+      selected_bar = st.plotly_chart(
+          fig_bar,
+          use_container_width=True,
+          key="bar_plot",
+          on_select="rerun",
+      )
+
+      if (
+          selected_bar
+          and "selection" in selected_bar
+          and selected_bar["selection"]["points"]
+      ):
+        selected_points = [
+            p["x"] for p in selected_bar["selection"]["points"]
+        ]
+        st.session_state.selected_filters[cat_columns[1]] = selected_points
+        st.rerun()
+
+    # --- มุมมองที่ 3: กราฟเส้น (Line Chart) แสดงแนวโน้มเรื่องที่ 3 ---
+    with c3:
+      st.subheader(f"📈 แนวโน้มตาม: {cat_columns[2]}")
+      line_data = (
+          filtered_df[cat_columns[2]].value_counts().reset_index().head(12)
+      )
+      line_data.columns = [cat_columns[2], "count"]
+      line_data = line_data.sort_values(by=cat_columns[2])
+
+      fig_line = px.line(
+          line_data,
+          x=cat_columns[2],
+          y="count",
+          markers=True,
+          color_discrete_sequence=["#2563EB"],
+      )
+      fig_line.update_layout(
+          margin=dict(t=20, b=20, l=20, r=20),
+          paper_bgcolor="rgba(0,0,0,0)",
+          plot_bgcolor="rgba(0,0,0,0)",
+      )
+
+      selected_line = st.plotly_chart(
+          fig_line,
+          use_container_width=True,
+          key="line_plot",
+          on_select="rerun",
+      )
+
+      if (
+          selected_line
+          and "selection" in selected_line
+          and selected_line["selection"]["points"]
+      ):
+        selected_points = [
+            p["x"] for p in selected_line["selection"]["points"]
+        ]
+        st.session_state.selected_filters[cat_columns[2]] = selected_points
+        st.rerun()
+  else:
+    st.warning("ข้อมูลมีคอลัมน์จัดกลุ่มไม่เพียงพอสำหรับการแสดงผลครบทุกมุมมอง")
+
+  st.markdown("---")
+
+  # ส่วนแสดงตารางข้อมูลรายละเอียดที่ถูกกรองข้ามกลุ่มเรียบร้อยแล้ว
+  st.subheader(
+      "📋 ตารางแสดงข้อมูลรายละเอียดทั้งหมด (รวมข้อมูลที่ผ่านการกรองข้ามมิติ)"
+  )
+  st.dataframe(filtered_df, use_container_width=True)
+
+  # ปุ่มดาวน์โหลดข้อมูลที่กรองแล้วเป็นไฟล์ CSV
+  csv_export = filtered_df.to_csv(index=False).encode("utf-8-sig")
+  st.download_button(
+      label="📥 ดาวน์โหลดข้อมูลชุดนี้ (.csv)",
+      data=csv_export,
+      file_name="cross_filtered_delivery_data.csv",
+      mime="text/csv",
+  )
